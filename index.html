@@ -251,7 +251,8 @@ function showError(msg) {
         <div class="state">
             <div class="state-icon">⚠️</div>
             <p class="state-text">${msg}</p>
-            <span class="state-retry" onclick="location.reload()">Попробовать снова</span>
+            <span class="state-retry" role="button" tabindex="0"
+                  onclick="location.reload()">Попробовать снова</span>
         </div>`;
 }
 
@@ -261,6 +262,8 @@ function showEmpty() {
         <div class="state">
             <div class="state-icon">📭</div>
             <p class="state-text">Новостей пока нет</p>
+            <span class="state-retry" role="button" tabindex="0"
+                  onclick="location.reload()">Обновить</span>
         </div>`;
 }
 
@@ -279,6 +282,7 @@ function formatDate(pubDate) {
 // ── Fetch & render (JSON from proxy) ──────────────────────────
 async function fetchNews() {
     showSkeletons();
+    document.getElementById('newsList').setAttribute('aria-live', 'polite');
 
     try {
         const resp = await fetch(API_BASE + '/news');
@@ -308,25 +312,21 @@ function renderArticles(articles) {
             ? `<img class="card-image" src="${escapeHtml(item.enclosureUrl)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`
             : `<div class="card-image">📰</div>`;
 
-        // Эмоциональный бейдж: один чип, насыщенность фона = сила
+        // Эмоциональный бейдж: твёрдый цвет, белый текст
         const label = item.emotion_label || '—';
         const strength = item.emotion_strength || 0;
-        const emoColor = getEmotionColor(label);
-        const emoBadge = label !== '—' ? (() => {
-            const c = getEmotionColor(label);
-            const alpha = Math.round(25 + strength * 15).toString(16).padStart(2, '0');
-            return `<span class="emotion-badge"
-                          style="--emo-fg:${c};--emo-bg:${c}${alpha}"
-                          title="Эмоция: ${label} · сила ${strength}/10">${label}</span>`;
-        })() : '';
+        const emoBadge = label !== '—'
+            ? `<span class="emotion-badge"
+                    style="background:${getEmotionColor(label)};opacity:${(0.25 + strength * 0.06).toFixed(2)}"
+                    title="Эмоция: ${escapeHtml(label)} · сила ${strength}/10">${escapeHtml(label)}</span>`
+            : '';
 
         const favIcon = item.is_favorited ? '★' : '☆';
         const favClass = item.is_favorited ? 'fav-btn active' : 'fav-btn';
 
         html += `
-        <article class="card" role="button" tabindex="0"
+        <article class="card" tabindex="0"
                  data-url="${escapeHtml(item.link)}"
-                 data-link="${escapeHtml(item.link)}"
                  aria-label="Читать статью: ${escapeHtml(item.title)}">
             <div class="card-row">
                 ${imgHtml}
@@ -371,7 +371,8 @@ function renderArticles(articles) {
 
             try {
                 const method = isActive ? 'DELETE' : 'POST';
-                const resp = await fetch(API_BASE + 'favorite', {
+                btn.disabled = true;
+                const resp = await fetch(API_BASE + '/favorite', {
                     method,
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({link}),
@@ -384,13 +385,14 @@ function renderArticles(articles) {
                 }
             } catch (err) {
                 console.error('Favorite error:', err);
+            } finally {
+                btn.disabled = false;
             }
+
+            // debounce: убираем disabled через 300 мс на всякий случай
+            setTimeout(() => { try { btn.disabled = false; } catch(e) {} }, 300);
         });
     });
-}
-
-function openArticle(url) {
-    if (url) window.open(url, '_blank', 'noopener');
 }
 
 function escapeHtml(str) {
