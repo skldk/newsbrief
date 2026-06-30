@@ -1,0 +1,3 @@
+# NewsBrief — зависимости только стандартная библиотека Python
+# sqlite3, http.server, urllib, xml.etree, json, re — всё встроено
+# Дополнительные пакеты не требуются
