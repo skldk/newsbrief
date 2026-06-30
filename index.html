@@ -19,6 +19,7 @@
             --shadow: 0 1px 3px rgba(0,0,0,0.06);
             --radius: 16px;
             --skeleton: #E5E5EA;
+            --shimmer-to: #D1D1D6;
         }
 
         @media (prefers-color-scheme: dark) {
@@ -32,6 +33,7 @@
                 --tag-fg: #AEAEB2;
                 --shadow: 0 1px 3px rgba(0,0,0,0.3);
                 --skeleton: #3A3A3C;
+                --shimmer-to: #545458;
             }
         }
 
@@ -137,8 +139,7 @@
         .emotion-badge {
             display: inline-block; vertical-align: middle;
             font-size: 10px; font-weight: 600; letter-spacing: 0.1px;
-            color: var(--emo-fg, #6E6E73);
-            background: var(--emo-bg, #E5E5EA);
+            color: #FFFFFF;
             padding: 2px 8px; border-radius: 6px;
             margin-left: 6px;
             cursor: help;
@@ -173,7 +174,7 @@
         .skeleton .sk-line.wide { width: 70%; }
         .skeleton .sk-line.medium { width: 50%; }
         .skeleton .sk-line.narrow { width: 30%; }
-        .skeleton .sk-img, .skeleton .sk-line { background: linear-gradient(90deg, var(--skeleton) 25%, var(--divider) 50%, var(--skeleton) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
+        .skeleton .sk-img, .skeleton .sk-line { background: linear-gradient(90deg, var(--skeleton) 25%, var(--shimmer-to) 50%, var(--skeleton) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
 
         /* ── Empty / Error ──────────────────────────────────── */
         .state { text-align: center; padding: 80px 20px; color: var(--sub); }
