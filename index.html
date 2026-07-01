@@ -317,6 +317,7 @@
         <label for="authPass">Пароль</label>
         <input type="password" id="authPass" placeholder="Минимум 4 символа" autocomplete="current-password">
         <button class="btn-primary" id="authSubmit">Войти</button>
+        <button class="btn-primary" id="yandexBtn" style="background:#FC3F1D;margin-bottom:12px" onclick="loginYandex()">🚀 Войти через Яндекс ID</button>
         <button class="btn-text" id="authSwitch">Создать аккаунт</button>
     </div>
 </div>
@@ -429,6 +430,23 @@ function updateAuthUI() {
         }
     } catch(e) {}
 })();
+
+// ── Яндекс ID ──────────────────────────────────────────────────
+async function loginYandex() {
+    try {
+        const resp = await fetch('/api/auth/yandex/login');
+        const data = await resp.json();
+        if (data.url) {
+            window.location.href = data.url;
+        } else {
+            authError.textContent = data.error || 'Яндекс ID не настроен';
+            authError.style.display = 'block';
+        }
+    } catch(e) {
+        authError.textContent = 'Ошибка соединения';
+        authError.style.display = 'block';
+    }
+}
 
 const list = document.getElementById('newsList');
 const API_BASE = '/api';

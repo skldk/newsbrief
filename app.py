@@ -27,6 +27,11 @@ JWT_SECRET = os.environ.get("JWT_SECRET", secrets.token_hex(32))
 ACCESS_TTL = 15 * 60          # 15 минут
 REFRESH_TTL = 30 * 24 * 3600  # 30 дней
 
+# Яндекс OAuth
+YANDEX_CLIENT_ID = os.environ.get("YANDEX_CLIENT_ID", "")
+YANDEX_CLIENT_SECRET = os.environ.get("YANDEX_CLIENT_SECRET", "")
+YANDEX_REDIRECT_URI = os.environ.get("YANDEX_REDIRECT_URI", f"http://localhost:{PORT}/api/auth/yandex/callback")
+
 CACHED_RESULT, CACHE_TIME, CACHE_TTL = None, 0, 300
 
 # ── База данных (SQLite) ──────────────────────────────────────
@@ -69,11 +74,17 @@ def init_db():
     db_execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
+            email TEXT UNIQUE,
+            password_hash TEXT,
+            yandex_id TEXT UNIQUE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Миграции
+    try:
+        db_execute("ALTER TABLE users ADD COLUMN yandex_id TEXT UNIQUE")
+    except sqlite3.OperationalError:
+        pass
     # Миграция: добавляем user_id если таблица уже существовала без него
     try:
         db_execute("ALTER TABLE favorites ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0")
@@ -183,6 +194,62 @@ def authenticate_user(email: str, password: str) -> Optional[dict]:
     if verify_password(password, u["password_hash"]):
         return {"id": u["id"], "email": u["email"]}
     return None
+
+# ── Яндекс OAuth ─────────────────────────────────────────────────
+
+def get_yandex_token(code: str) -> Optional[dict]:
+    """Обменивает authorization_code на access_token."""
+    if not YANDEX_CLIENT_ID or not YANDEX_CLIENT_SECRET:
+        return None
+    try:
+        data = urllib.parse.urlencode({
+            "grant_type": "authorization_code",
+            "code": code,
+            "client_id": YANDEX_CLIENT_ID,
+            "client_secret": YANDEX_CLIENT_SECRET,
+        }).encode()
+        req = urllib.request.Request("https://oauth.yandex.ru/token", data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+    except Exception as e:
+        print(f"[app] Yandex token error: {e}", file=sys.stderr)
+        return None
+
+def get_yandex_user_info(access_token: str) -> Optional[dict]:
+    """Получает id, login, email пользователя Яндекса."""
+    try:
+        req = urllib.request.Request("https://login.yandex.ru/info",
+            headers={"Authorization": f"OAuth {access_token}"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+    except Exception as e:
+        print(f"[app] Yandex user info error: {e}", file=sys.stderr)
+        return None
+
+def find_or_create_yandex_user(yandex_info: dict) -> Optional[dict]:
+    """Находит или создаёт пользователя по данным Яндекса."""
+    yandex_id = str(yandex_info.get("id", ""))
+    email = (yandex_info.get("default_email") or yandex_info.get("login") + "@yandex.ru").strip().lower()
+
+    # Ищем по yandex_id
+    user = db_execute("SELECT id, email FROM users WHERE yandex_id = ?", (yandex_id,))
+    if user:
+        return dict(user[0])
+
+    # Ищем по email (связываем аккаунты)
+    user = db_execute("SELECT id, email FROM users WHERE email = ?", (email,))
+    if user:
+        db_execute("UPDATE users SET yandex_id = ? WHERE id = ?", (yandex_id, user[0]["id"]))
+        return dict(user[0])
+
+    # Создаём нового
+    try:
+        db_execute("INSERT INTO users (email, yandex_id) VALUES (?, ?)", (email, yandex_id))
+        user = db_execute("SELECT id, email FROM users WHERE yandex_id = ?", (yandex_id,))
+        return dict(user[0]) if user else None
+    except sqlite3.IntegrityError:
+        return None
 
 # ── Favorites (user-scoped) ─────────────────────────────────────
 
@@ -345,6 +412,48 @@ class AppHandler(http.server.BaseHTTPRequestHandler):
                     self._json({"authenticated": True, "user": {"id": u["id"], "email": u["email"]}})
                 else:
                     self._json({"authenticated": False})
+        elif path == "/api/auth/yandex/login":
+            if not YANDEX_CLIENT_ID:
+                self._json({"error": "Яндекс ID не настроен"}, 501)
+            else:
+                auth_url = (
+                    "https://oauth.yandex.ru/authorize"
+                    f"?response_type=code"
+                    f"&client_id={YANDEX_CLIENT_ID}"
+                    f"&redirect_uri={urllib.parse.quote(YANDEX_REDIRECT_URI, safe='')}"
+                )
+                self._json({"url": auth_url})
+        elif path == "/api/auth/yandex/callback":
+            query = parse_qs(urlparse(self.path).query)
+            code = query.get("code", [None])[0]
+            if not code:
+                self.send_response(302)
+                self.send_header("Location", "/?error=yandex_no_code")
+                self.end_headers()
+                return
+            token_data = get_yandex_token(code)
+            if not token_data or "access_token" not in token_data:
+                self.send_response(302)
+                self.send_header("Location", "/?error=yandex_token")
+                self.end_headers()
+                return
+            user_info = get_yandex_user_info(token_data["access_token"])
+            if not user_info or "id" not in user_info:
+                self.send_response(302)
+                self.send_header("Location", "/?error=yandex_userinfo")
+                self.end_headers()
+                return
+            user = find_or_create_yandex_user(user_info)
+            if user is None:
+                self.send_response(302)
+                self.send_header("Location", "/?error=yandex_create")
+                self.end_headers()
+                return
+            access, refresh = create_tokens(user["id"])
+            self.send_response(302)
+            set_auth_cookies(self, access, refresh)
+            self.send_header("Location", "/")
+            self.end_headers()
         else:
             self._static(path)
 
