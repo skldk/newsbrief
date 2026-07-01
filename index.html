@@ -277,6 +277,20 @@
             width: 100%; font-family: inherit;
         }
         .modal .error-msg { color: #FF3B30; font-size: 12px; text-align: center; margin-bottom: 12px; display: none; }
+        .pass-wrap { position: relative; }
+        .pass-wrap input { padding-right: 36px; }
+        .pass-toggle {
+            position: absolute; right: 6px; top: 50%; transform: translateY(-65%);
+            background: none; border: none; cursor: pointer; padding: 6px;
+            color: var(--sub); border-radius: 6px;
+            transition: color 0.15s, background 0.15s;
+            display: flex; align-items: center; justify-content: center;
+            line-height: 0;
+        }
+        .pass-toggle:hover { color: var(--text); background: var(--tag-bg); }
+        .pass-toggle:active { transform: translateY(-65%) scale(0.92); }
+        .pass-slash { transition: opacity 0.15s; }
+        .pass-toggle.show .pass-slash { opacity: 0; }
     </style>
 </head>
 <body>
@@ -315,9 +329,15 @@
         <label for="authEmail">Email</label>
         <input type="email" id="authEmail" placeholder="you@example.com" autocomplete="email">
         <label for="authPass">Пароль</label>
-        <div style="position:relative">
-            <input type="password" id="authPass" placeholder="Минимум 4 символа" autocomplete="current-password" style="padding-right:40px">
-            <button type="button" id="passToggle" onclick="togglePassVisibility()" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:16px;color:var(--sub);padding:4px;line-height:1">👁</button>
+        <div class="pass-wrap">
+            <input type="password" id="authPass" placeholder="Минимум 4 символа" autocomplete="current-password">
+            <button type="button" class="pass-toggle" id="passToggle" onclick="togglePassVisibility()" aria-label="Показать пароль">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M2 10s3-6 8-6 8 6 8 6-3 6-8 6-8-6-8-6z"/>
+                    <circle cx="10" cy="10" r="2.5"/>
+                    <line x1="3" y1="17" x2="17" y2="3" class="pass-slash"/>
+                </svg>
+            </button>
         </div>
         <button class="btn-primary" id="authSubmit">Войти</button>
         <button class="btn-primary" id="yandexBtn" style="background:#FC3F1D;margin-bottom:12px" onclick="loginYandex()">🚀 Войти через Яндекс ID</button>
@@ -359,7 +379,7 @@ function showAuthModal() {
     authError.style.display = 'none';
     authEmail.value = ''; authPass.value = '';
     authPass.type = 'password';
-    document.getElementById('passToggle').textContent = '👁';
+    document.getElementById('passToggle').classList.remove('show');
     authOverlay.classList.add('active');
     setTimeout(() => authEmail.focus(), 100);
 }
@@ -371,10 +391,12 @@ function togglePassVisibility() {
     const btn = document.getElementById('passToggle');
     if (pass.type === 'password') {
         pass.type = 'text';
-        btn.textContent = '🙈';
+        btn.classList.add('show');
+        btn.setAttribute('aria-label', 'Скрыть пароль');
     } else {
         pass.type = 'password';
-        btn.textContent = '👁';
+        btn.classList.remove('show');
+        btn.setAttribute('aria-label', 'Показать пароль');
     }
 }
 
