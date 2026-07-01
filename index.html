@@ -17,7 +17,7 @@
             --tag-bg: #F2F2F7;
             --tag-fg: #515154;
             --shadow: 0 1px 3px rgba(0,0,0,0.06);
-            --radius: 16px;
+            --radius: 20px;
             --skeleton: #E5E5EA;
             --shimmer-to: #D1D1D6;
             --header-bg: rgba(245,245,247,0.82);
@@ -36,6 +36,7 @@
                 --skeleton: #3A3A3C;
                 --shimmer-to: #545458;
                 --header-bg: rgba(28,28,30,0.82);
+                --accent: #0A84FF;
             }
         }
 
@@ -72,7 +73,8 @@
         .header-toggle {
             background: none; border: 0.5px solid var(--divider);
             color: var(--sub); font-size: 12px; font-family: inherit;
-            padding: 4px 12px; border-radius: 8px; cursor: pointer;
+            padding: 8px 16px; border-radius: 8px; cursor: pointer;
+            min-height: 36px;
             transition: background 0.15s, color 0.15s, border-color 0.15s;
             white-space: nowrap;
         }
@@ -94,7 +96,8 @@
             margin-bottom: 12px;
             box-shadow: var(--shadow);
             cursor: pointer;
-            transition: transform 0.15s ease, box-shadow 0.15s ease;
+            transition: transform 0.3s cubic-bezier(0.25, 1, 0.5, 1), box-shadow 0.3s cubic-bezier(0.25, 1, 0.5, 1);
+            animation: cardAppear 0.4s cubic-bezier(0.25, 1, 0.5, 1) both;
             border: 0.5px solid var(--divider);
         }
         .card:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
@@ -173,7 +176,7 @@
         .fav-btn {
             background: none; border: none; cursor: pointer;
             font-size: 15px; padding: 2px; line-height: 1;
-            opacity: 0.8; transition: opacity 0.15s, transform 0.15s, color 0.15s;
+            opacity: 0.8; transition: opacity 0.2s cubic-bezier(0.25, 1, 0.5, 1), transform 0.2s cubic-bezier(0.25, 1, 0.5, 1), color 0.2s cubic-bezier(0.25, 1, 0.5, 1);
             vertical-align: middle; color: var(--sub);
         }
         .fav-btn:hover { transform: scale(1.2); opacity: 1; color: var(--accent); }
@@ -202,6 +205,12 @@
         .state-retry { color: var(--accent); cursor: pointer; font-size: 14px; font-weight: 600; }
         .state-retry:hover { text-decoration: underline; }
 
+        /* ── Card appear animation ──────────────────────────── */
+        @keyframes cardAppear {
+            from { opacity: 0; transform: translateY(8px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
         /* ── Footer ─────────────────────────────────────────── */
         .footer { max-width: 720px; margin: 0 auto; text-align: center; padding: 24px 16px 40px; color: var(--sub); font-size: 11px; }
         .footer a { color: var(--accent); text-decoration: none; }
@@ -218,7 +227,7 @@
         @media (max-width: 480px) {
             .header { padding: 12px 16px; }
             .main { padding: 16px 16px 40px; }
-            .card { padding: 16px; border-radius: 12px; }
+            .card { padding: 16px; border-radius: 16px; }
             .card-image { width: 56px; min-width: 56px; height: 56px; font-size: 22px; }
             .card-title { font-size: 14px; }
         }
