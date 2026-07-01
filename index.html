@@ -468,9 +468,54 @@ function updateAuthUI() {
         if (data.authenticated) {
             currentUser = data.user;
             updateAuthUI();
+            startTokenKeepAlive();
         }
     } catch(e) {}
 })();
+
+// ── Token refresh ──────────────────────────────────────────────
+async function refreshToken() {
+    try {
+        const resp = await fetch('/api/auth/refresh', {
+            method: 'POST',
+            credentials: 'same-origin',
+        });
+        const data = await resp.json();
+        return resp.ok && data.ok;
+    } catch(e) {
+        return false;
+    }
+}
+
+// Фоновая поддержка сессии: раз в 10 минут
+let keepAliveInterval = null;
+function startTokenKeepAlive() {
+    if (keepAliveInterval) clearInterval(keepAliveInterval);
+    keepAliveInterval = setInterval(async () => {
+        if (!currentUser) { clearInterval(keepAliveInterval); return; }
+        const ok = await refreshToken();
+        if (!ok) {
+            currentUser = null;
+            updateAuthUI();
+            clearInterval(keepAliveInterval);
+        }
+    }, 10 * 60 * 1000); // каждые 10 минут
+}
+
+// fetch с авто-рефрешем при 401
+async function fetchWithAuth(url, options = {}) {
+    let resp = await fetch(url, { ...options, credentials: 'same-origin' });
+    if (resp.status === 401 && currentUser) {
+        const refreshed = await refreshToken();
+        if (refreshed) {
+            resp = await fetch(url, { ...options, credentials: 'same-origin' });
+        } else {
+            currentUser = null;
+            updateAuthUI();
+        }
+    }
+    return resp;
+}
 
 // ── Яндекс ID ──────────────────────────────────────────────────
 async function loginYandex() {
@@ -639,7 +684,7 @@ function renderArticles(articles) {
             try {
                 btn.disabled = true;
                 const method = isActive ? 'DELETE' : 'POST';
-                const resp = await fetch(API_BASE + '/favorite', {
+                const resp = await fetchWithAuth(API_BASE + '/favorite', {
                     method,
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({link}),
@@ -669,7 +714,11 @@ function renderArticles(articles) {
 async function fetchFavorites() {
     showSkeletons();
     try {
-        const resp = await fetch(API_BASE + '/favorites');
+        const resp = await fetchWithAuth(API_BASE + '/favorites');
+        if (resp.status === 401) {
+            showAuthModal();
+            return;
+        }
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const articles = await resp.json();
         if (!Array.isArray(articles) || articles.length === 0) {
