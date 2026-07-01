@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 """
-NewsBrief — лендинг новостей с эмоциональной разметкой и избранным.
+NewsBrief — лендинг новостей с эмоциональной разметкой, избранным и авторизацией.
 Готов к деплою на Railway / Render / любой Python-хостинг.
 
 Запуск: python3 app.py
 Переменные окружения:
-  DEEPSEEK_API_KEY — ключ API DeepSeek (опционально, без него эмоции не размечаются)
+  DEEPSEEK_API_KEY — ключ API DeepSeek (опционально)
   PORT             — порт (по умолчанию 8080)
+  JWT_SECRET       — секрет для JWT (по умолчанию генерируется)
 """
 
 import http.server
 import urllib.request, urllib.error
-import json, xml.etree.ElementTree as ET, os, sys, re, time
-from datetime import datetime
-from urllib.parse import urlparse
+import json, xml.etree.ElementTree as ET, os, sys, re, time, hashlib, hmac, base64, secrets
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Tuple, Union
+from urllib.parse import urlparse, parse_qs
 
 # ── Конфигурация ──────────────────────────────────────────────
 RSS_URL = "https://www.vedomosti.ru/rss/news"
@@ -21,6 +23,9 @@ MAX_ITEMS = 10
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 PORT = int(os.environ.get("PORT", 8080))
+JWT_SECRET = os.environ.get("JWT_SECRET", secrets.token_hex(32))
+ACCESS_TTL = 15 * 60          # 15 минут
+REFRESH_TTL = 30 * 24 * 3600  # 30 дней
 
 CACHED_RESULT, CACHE_TIME, CACHE_TTL = None, 0, 300
 
@@ -33,6 +38,7 @@ _local = threading.local()
 def _db():
     if not hasattr(_local, 'conn') or _local.conn is None:
         _local.conn = sqlite3.connect(SQLITE_DB)
+        _local.conn.row_factory = sqlite3.Row
     return _local.conn
 
 def db_execute(sql, params=None):
@@ -47,7 +53,8 @@ def init_db():
     db_execute("""
         CREATE TABLE IF NOT EXISTS favorites (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            link TEXT UNIQUE NOT NULL,
+            user_id INTEGER NOT NULL DEFAULT 0,
+            link TEXT NOT NULL,
             title TEXT NOT NULL,
             descr TEXT,
             category TEXT,
@@ -55,34 +62,157 @@ def init_db():
             enclosure_url TEXT,
             emotion_label TEXT,
             emotion_strength INTEGER,
-            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, link)
         )
     """)
+    db_execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    # Миграция: добавляем user_id если таблица уже существовала без него
+    try:
+        db_execute("ALTER TABLE favorites ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass  # колонка уже есть
 
-def get_favorite_links():
-    rows = db_execute("SELECT link FROM favorites")
+# ── JWT helpers (stdlib only) ───────────────────────────────────
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b'=').decode()
+
+def _b64url_decode(s: str) -> bytes:
+    s += '=' * (4 - len(s) % 4)
+    return base64.urlsafe_b64decode(s)
+
+def encode_jwt(payload: dict, secret: str = JWT_SECRET) -> str:
+    header = {"alg": "HS256", "typ": "JWT"}
+    h = _b64url_encode(json.dumps(header, separators=(',', ':')).encode())
+    p = _b64url_encode(json.dumps(payload, separators=(',', ':')).encode())
+    sig_input = f"{h}.{p}".encode()
+    sig = _b64url_encode(hmac.new(secret.encode(), sig_input, hashlib.sha256).digest())
+    return f"{h}.{p}.{sig}"
+
+def decode_jwt(token: str, secret: str = JWT_SECRET) -> Optional[dict]:
+    try:
+        parts = token.split('.')
+        if len(parts) != 3:
+            return None
+        h, p, sig = parts
+        sig_input = f"{h}.{p}".encode()
+        expected = _b64url_encode(hmac.new(secret.encode(), sig_input, hashlib.sha256).digest())
+        if not hmac.compare_digest(sig, expected):
+            return None
+        payload = json.loads(_b64url_decode(p))
+        if payload.get("exp", 0) < time.time():
+            return None
+        return payload
+    except Exception:
+        return None
+
+# ── Password hashing (pbkdf2) ───────────────────────────────────
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 200_000)
+    return f"pbkdf2:sha256:200000:{salt}:{h.hex()}"
+
+def verify_password(password: str, hashed: str) -> bool:
+    try:
+        _, algo, iterations, salt, stored = hashed.split(':')
+        h = hashlib.pbkdf2_hmac(algo, password.encode(), salt.encode(), int(iterations))
+        return hmac.compare_digest(h.hex(), stored)
+    except (ValueError, AttributeError):
+        return False
+
+# ── Auth helpers ────────────────────────────────────────────────
+
+def create_tokens(user_id: int) -> Tuple[str, str]:
+    now = int(time.time())
+    access = encode_jwt({"sub": user_id, "exp": now + ACCESS_TTL, "type": "access"})
+    refresh = encode_jwt({"sub": user_id, "exp": now + REFRESH_TTL, "type": "refresh"})
+    return access, refresh
+
+def set_auth_cookies(handler, access: str, refresh: str):
+    handler.send_header("Set-Cookie",
+        f"access_token={access}; HttpOnly; Path=/; Max-Age={ACCESS_TTL}; SameSite=Lax")
+    handler.send_header("Set-Cookie",
+        f"refresh_token={refresh}; HttpOnly; Path=/api/auth; Max-Age={REFRESH_TTL}; SameSite=Lax")
+
+def clear_auth_cookies(handler):
+    handler.send_header("Set-Cookie", "access_token=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax")
+    handler.send_header("Set-Cookie", "refresh_token=; HttpOnly; Path=/api/auth; Max-Age=0; SameSite=Lax")
+
+def get_user_from_request(handler) -> Optional[int]:
+    """Извлекает user_id из HttpOnly cookie. Возвращает None если нет/невалиден."""
+    cookie = handler.headers.get("Cookie", "")
+    match = re.search(r'access_token=([^;]+)', cookie)
+    if not match:
+        return None
+    payload = decode_jwt(match.group(1))
+    if payload is None or payload.get("type") != "access":
+        return None
+    return payload.get("sub")
+
+# ── User DB ─────────────────────────────────────────────────────
+
+def create_user(email: str, password: str) -> Optional[dict]:
+    email = email.strip().lower()
+    if not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
+        return None
+    if len(password) < 4:
+        return None
+    try:
+        db_execute("INSERT INTO users (email, password_hash) VALUES (?, ?)",
+                   (email, hash_password(password)))
+        user = db_execute("SELECT id, email FROM users WHERE email = ?", (email,))
+        return dict(user[0]) if user else None
+    except sqlite3.IntegrityError:
+        return None  # email already exists
+
+def authenticate_user(email: str, password: str) -> Optional[dict]:
+    email = email.strip().lower()
+    user = db_execute("SELECT id, email, password_hash FROM users WHERE email = ?", (email,))
+    if not user:
+        return None
+    u = dict(user[0])
+    if verify_password(password, u["password_hash"]):
+        return {"id": u["id"], "email": u["email"]}
+    return None
+
+# ── Favorites (user-scoped) ─────────────────────────────────────
+
+def get_favorite_links(user_id: Optional[int] = None):
+    if user_id is None:
+        rows = db_execute("SELECT link FROM favorites")
+    else:
+        rows = db_execute("SELECT link FROM favorites WHERE user_id = ?", (user_id,))
     return {r[0] for r in rows} if rows else set()
 
-def add_favorite(link, title, descr, category, pub_date, enclosure_url, emotion_label, emotion_strength):
+def add_favorite(link, title, descr, category, pub_date, enclosure_url, emotion_label, emotion_strength, user_id=0):
     db_execute("""
-        INSERT OR IGNORE INTO favorites (link, title, descr, category, pub_date, enclosure_url, emotion_label, emotion_strength)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (link, title, descr, category, pub_date, enclosure_url, emotion_label, emotion_strength))
+        INSERT OR IGNORE INTO favorites (user_id, link, title, descr, category, pub_date, enclosure_url, emotion_label, emotion_strength)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (user_id, link, title, descr, category, pub_date, enclosure_url, emotion_label, emotion_strength))
 
-def remove_favorite(link):
-    db_execute("DELETE FROM favorites WHERE link = ?", (link,))
+def remove_favorite(link, user_id=0):
+    db_execute("DELETE FROM favorites WHERE link = ? AND user_id = ?", (link, user_id))
 
-def get_all_favorites():
+def get_all_favorites(user_id=0):
     rows = db_execute("""
         SELECT link, title, descr, category, pub_date, enclosure_url, emotion_label, emotion_strength, added_at
-        FROM favorites ORDER BY added_at DESC
-    """)
+        FROM favorites WHERE user_id = ? ORDER BY added_at DESC
+    """, (user_id,))
     return [{"link": r[0], "title": r[1], "desc": r[2], "category": r[3],
              "pubDate": r[4], "enclosureUrl": r[5], "emotion_label": r[6],
              "emotion_strength": r[7], "added_at": r[8] if r[8] else None,
              "is_favorited": True} for r in (rows or [])]
 
-# ── RSS + эмоции ──────────────────────────────────────────────
+# ── RSS + эмоции (без изменений) ────────────────────────────────
 
 def fetch_rss():
     req = urllib.request.Request(RSS_URL, headers={"User-Agent": "Mozilla/5.0"})
@@ -132,17 +262,22 @@ def analyze_emotions(articles):
         for a in articles: a["emotion_label"], a["emotion_strength"] = "—", 0
     return articles
 
-def get_articles():
+def get_articles(user_id: Optional[int] = None):
     global CACHED_RESULT, CACHE_TIME
     now = time.time()
     if CACHED_RESULT and (now - CACHE_TIME) < CACHE_TTL:
-        return CACHED_RESULT
-    articles = analyze_emotions(fetch_rss())
-    fav = get_favorite_links()
+        articles = CACHED_RESULT
+    else:
+        articles = analyze_emotions(fetch_rss())
+        CACHED_RESULT, CACHE_TIME = articles, now
+
+    fav = get_favorite_links(user_id)
+    result = []
     for a in articles:
-        a["is_favorited"] = a["link"] in fav
-    CACHED_RESULT, CACHE_TIME = articles, now
-    return articles
+        item = dict(a)
+        item["is_favorited"] = item["link"] in fav
+        result.append(item)
+    return result
 
 # ── HTTP сервер ───────────────────────────────────────────────
 
@@ -152,7 +287,8 @@ class AppHandler(http.server.BaseHTTPRequestHandler):
     def _cors(self, status=200):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", "http://localhost:8080")
+        self.send_header("Access-Control-Allow-Credentials", "true")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         if status != 204: self.end_headers()
@@ -162,7 +298,7 @@ class AppHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(data, ensure_ascii=False).encode())
 
     def _static(self, path):
-        if path == "/" or path == "/index.html":
+        if path in ("/", "/index.html"):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
@@ -172,56 +308,140 @@ class AppHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
+    def _read_body(self) -> dict:
+        length = int(self.headers.get("Content-Length", 0))
+        return json.loads(self.rfile.read(length)) if length > 0 else {}
+
     def do_OPTIONS(self):
         self._cors(204)
         self.end_headers()
 
+    # ── GET ────────────────────────────────────────────────────
     def do_GET(self):
         path = urlparse(self.path).path
         if path == "/api/news":
             try:
-                self._json(get_articles())
+                user_id = get_user_from_request(self)
+                self._json(get_articles(user_id))
             except Exception as e:
                 self._json({"error": str(e)}, 500)
         elif path == "/api/favorites":
             try:
-                self._json(get_all_favorites())
+                user_id = get_user_from_request(self)
+                if user_id is None:
+                    self._json({"error": "Требуется авторизация"}, 401)
+                else:
+                    self._json(get_all_favorites(user_id))
             except Exception as e:
                 self._json({"error": str(e)}, 500)
+        elif path == "/api/auth/me":
+            user_id = get_user_from_request(self)
+            if user_id is None:
+                self._json({"authenticated": False})
+            else:
+                user = db_execute("SELECT id, email, created_at FROM users WHERE id = ?", (user_id,))
+                if user:
+                    u = dict(user[0])
+                    self._json({"authenticated": True, "user": {"id": u["id"], "email": u["email"]}})
+                else:
+                    self._json({"authenticated": False})
         else:
             self._static(path)
 
-    def _clear_cache(self):
-        global CACHED_RESULT
-        CACHED_RESULT = None
-
+    # ── POST ───────────────────────────────────────────────────
     def do_POST(self):
         path = urlparse(self.path).path
-        length = int(self.headers.get("Content-Length", 0))
-        data = json.loads(self.rfile.read(length)) if length > 0 else {}
-        if path == "/api/favorite":
+        data = self._read_body()
+
+        # ── Auth: register ──────────────────────────────────
+        if path == "/api/auth/register":
+            email = data.get("email", "").strip()
+            password = data.get("password", "")
+            user = create_user(email, password)
+            if user is None:
+                self._json({"error": "Email уже занят или неверный формат"}, 400)
+                return
+            access, refresh = create_tokens(user["id"])
+            self._cors(200)
+            set_auth_cookies(self, access, refresh)
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True, "user": user}, ensure_ascii=False).encode())
+
+        # ── Auth: login ─────────────────────────────────────
+        elif path == "/api/auth/login":
+            email = data.get("email", "")
+            password = data.get("password", "")
+            user = authenticate_user(email, password)
+            if user is None:
+                self._json({"error": "Неверный email или пароль"}, 401)
+                return
+            access, refresh = create_tokens(user["id"])
+            self._cors(200)
+            set_auth_cookies(self, access, refresh)
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True, "user": user}, ensure_ascii=False).encode())
+
+        # ── Auth: logout ────────────────────────────────────
+        elif path == "/api/auth/logout":
+            self._cors(200)
+            clear_auth_cookies(self)
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True}, ensure_ascii=False).encode())
+
+        # ── Auth: refresh ───────────────────────────────────
+        elif path == "/api/auth/refresh":
+            cookie = self.headers.get("Cookie", "")
+            match = re.search(r'refresh_token=([^;]+)', cookie)
+            if not match:
+                self._json({"error": "Нет refresh токена"}, 401)
+                return
+            payload = decode_jwt(match.group(1))
+            if payload is None or payload.get("type") != "refresh":
+                self._json({"error": "Невалидный refresh токен"}, 401)
+                return
+            user_id = payload.get("sub")
+            access, refresh = create_tokens(user_id)
+            self._cors(200)
+            set_auth_cookies(self, access, refresh)
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True}, ensure_ascii=False).encode())
+
+        # ── Favorite: add ──────────────────────────────────
+        elif path == "/api/favorite":
+            user_id = get_user_from_request(self)
+            if user_id is None:
+                self._json({"error": "Требуется авторизация"}, 401)
+                return
             try:
                 link = data.get("link", "")
                 article = next((a for a in (CACHED_RESULT or []) if a["link"] == link), None)
                 if not article:
-                    return self._json({"error": "Статья не найдена"}, 404)
+                    self._json({"error": "Статья не найдена"}, 404)
+                    return
                 add_favorite(article["link"], article["title"], article["desc"],
                              article["category"], article["pubDate"], article["enclosureUrl"],
-                             article.get("emotion_label", "—"), article.get("emotion_strength", 0))
+                             article.get("emotion_label", "—"), article.get("emotion_strength", 0),
+                             user_id)
                 self._clear_cache()
                 self._json({"ok": True})
             except Exception as e:
                 self._json({"error": str(e)}, 500)
+
         else:
             self._json({"error": "not found"}, 404)
 
+    # ── DELETE ──────────────────────────────────────────────────
     def do_DELETE(self):
         path = urlparse(self.path).path
         length = int(self.headers.get("Content-Length", 0))
         data = json.loads(self.rfile.read(length)) if length > 0 else {}
         if path == "/api/favorite":
+            user_id = get_user_from_request(self)
+            if user_id is None:
+                self._json({"error": "Требуется авторизация"}, 401)
+                return
             try:
-                remove_favorite(data.get("link", ""))
+                remove_favorite(data.get("link", ""), user_id)
                 self._clear_cache()
                 self._json({"ok": True})
             except Exception as e:
@@ -229,8 +449,12 @@ class AppHandler(http.server.BaseHTTPRequestHandler):
         else:
             self._json({"error": "not found"}, 404)
 
+    def _clear_cache(self):
+        global CACHED_RESULT
+        CACHED_RESULT = None
+
     def log_message(self, fmt, *args):
-        pass
+        pass  # тихий режим
 
 if __name__ == "__main__":
     init_db()
