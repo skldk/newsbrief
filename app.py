@@ -173,7 +173,7 @@ def get_user_from_request(handler) -> Optional[int]:
 
 def create_user(email: str, password: str) -> Optional[dict]:
     email = email.strip().lower()
-    if not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
+    if not re.match(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$', email):
         return None
     if len(password) < 4:
         return None
@@ -466,9 +466,15 @@ class AppHandler(http.server.BaseHTTPRequestHandler):
         if path == "/api/auth/register":
             email = data.get("email", "").strip()
             password = data.get("password", "")
+            if not re.match(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$', email):
+                self._json({"error": "Введите корректный email"}, 400)
+                return
+            if len(password) < 4:
+                self._json({"error": "Пароль должен быть не менее 4 символов"}, 400)
+                return
             user = create_user(email, password)
             if user is None:
-                self._json({"error": "Email уже занят или неверный формат"}, 400)
+                self._json({"error": "Пользователь с таким email уже зарегистрирован"}, 400)
                 return
             access, refresh = create_tokens(user["id"])
             self._cors(200)
