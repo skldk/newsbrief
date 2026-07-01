@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NewsBrief — Ведомости / Рынки</title>
+    <title>NewsBrief — Ведомости / Новости</title>
     <style>
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -240,7 +240,7 @@
         <div class="logo">News<span>Brief</span></div>
         <div class="header-right">
             <button id="favToggle" class="header-toggle" aria-pressed="false">☆ Избранное</button>
-            <span class="header-source" id="headerSource">Ведомости · Рынки</span>
+            <span class="header-source" id="headerSource">Ведомости · Новости</span>
             <span class="header-date" id="headerDate"></span>
         </div>
     </div>
@@ -257,7 +257,7 @@
 </main>
 
 <footer class="footer">
-    Данные из <a href="https://www.vedomosti.ru/rss/rubric/finance/markets" target="_blank" rel="noopener">RSS Ведомости</a> · обновляется при загрузке
+    Данные из <a href="https://www.vedomosti.ru/rss/news" target="_blank" rel="noopener">RSS Ведомости</a> · обновляется при загрузке
 </footer>
 
 <script>
@@ -484,7 +484,7 @@ function toggleView() {
         favToggle.textContent = '☆ Избранное';
         favToggle.classList.remove('active');
         favToggle.setAttribute('aria-pressed', 'false');
-        headerSource.textContent = 'Ведомости · Рынки';
+        headerSource.textContent = 'Ведомости · Новости';
         fetchNews();
     }
 }

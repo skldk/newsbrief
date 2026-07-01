@@ -16,7 +16,7 @@ from datetime import datetime
 from urllib.parse import urlparse
 
 # ── Конфигурация ──────────────────────────────────────────────
-RSS_URL = "https://www.vedomosti.ru/rss/rubric/finance/markets"
+RSS_URL = "https://www.vedomosti.ru/rss/news"
 MAX_ITEMS = 10
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
