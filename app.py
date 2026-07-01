@@ -380,14 +380,15 @@ def get_articles(user_id: Optional[int] = None):
 INDEX_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
 
 class AppHandler(http.server.BaseHTTPRequestHandler):
-    def _cors(self, status=200):
+    def _cors(self, status=200, end=True):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "http://localhost:8080")
         self.send_header("Access-Control-Allow-Credentials", "true")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        if status != 204: self.end_headers()
+        if end and status != 204:
+            self.end_headers()
 
     def _json(self, data, status=200):
         self._cors(status)
@@ -506,7 +507,7 @@ class AppHandler(http.server.BaseHTTPRequestHandler):
                 self._json({"error": "Пользователь с таким email уже зарегистрирован"}, 400)
                 return
             access, refresh = create_tokens(user["id"])
-            self._cors(200)
+            self._cors(200, end=False)
             set_auth_cookies(self, access, refresh)
             self.end_headers()
             self.wfile.write(json.dumps({"ok": True, "user": user}, ensure_ascii=False).encode())
@@ -529,14 +530,14 @@ class AppHandler(http.server.BaseHTTPRequestHandler):
                 return
             clear_rate_limit(ip)
             access, refresh = create_tokens(user["id"])
-            self._cors(200)
+            self._cors(200, end=False)
             set_auth_cookies(self, access, refresh)
             self.end_headers()
             self.wfile.write(json.dumps({"ok": True, "user": user}, ensure_ascii=False).encode())
 
         # ── Auth: logout ────────────────────────────────────
         elif path == "/api/auth/logout":
-            self._cors(200)
+            self._cors(200, end=False)
             clear_auth_cookies(self)
             self.end_headers()
             self.wfile.write(json.dumps({"ok": True}, ensure_ascii=False).encode())
@@ -554,7 +555,7 @@ class AppHandler(http.server.BaseHTTPRequestHandler):
                 return
             user_id = payload.get("sub")
             access, refresh = create_tokens(user_id)
-            self._cors(200)
+            self._cors(200, end=False)
             set_auth_cookies(self, access, refresh)
             self.end_headers()
             self.wfile.write(json.dumps({"ok": True}, ensure_ascii=False).encode())
