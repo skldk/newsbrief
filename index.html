@@ -315,7 +315,10 @@
         <label for="authEmail">Email</label>
         <input type="email" id="authEmail" placeholder="you@example.com" autocomplete="email">
         <label for="authPass">Пароль</label>
-        <input type="password" id="authPass" placeholder="Минимум 4 символа" autocomplete="current-password">
+        <div style="position:relative">
+            <input type="password" id="authPass" placeholder="Минимум 4 символа" autocomplete="current-password" style="padding-right:40px">
+            <button type="button" id="passToggle" onclick="togglePassVisibility()" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:16px;color:var(--sub);padding:4px;line-height:1">👁</button>
+        </div>
         <button class="btn-primary" id="authSubmit">Войти</button>
         <button class="btn-primary" id="yandexBtn" style="background:#FC3F1D;margin-bottom:12px" onclick="loginYandex()">🚀 Войти через Яндекс ID</button>
         <button class="btn-text" id="authSwitch">Создать аккаунт</button>
@@ -351,13 +354,29 @@ function showAuthModal() {
     authMode = 'login';
     authTitle.textContent = 'Вход';
     authSubmit.textContent = 'Войти';
+    authSubmit.disabled = false;
     authSwitch.textContent = 'Создать аккаунт';
     authError.style.display = 'none';
     authEmail.value = ''; authPass.value = '';
+    authPass.type = 'password';
+    document.getElementById('passToggle').textContent = '👁';
     authOverlay.classList.add('active');
+    setTimeout(() => authEmail.focus(), 100);
 }
 
 function hideAuthModal() { authOverlay.classList.remove('active'); }
+
+function togglePassVisibility() {
+    const pass = document.getElementById('authPass');
+    const btn = document.getElementById('passToggle');
+    if (pass.type === 'password') {
+        pass.type = 'text';
+        btn.textContent = '🙈';
+    } else {
+        pass.type = 'password';
+        btn.textContent = '👁';
+    }
+}
 
 authSwitch.addEventListener('click', () => {
     authMode = authMode === 'login' ? 'register' : 'login';
@@ -368,6 +387,7 @@ authSwitch.addEventListener('click', () => {
 });
 
 authSubmit.addEventListener('click', async () => {
+    if (authSubmit.disabled) return;
     const email = authEmail.value.trim();
     const password = authPass.value;
     if (!email || !password) {
@@ -376,6 +396,11 @@ authSubmit.addEventListener('click', async () => {
         return;
     }
     const url = authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
+    const origText = authSubmit.textContent;
+    authSubmit.disabled = true;
+    authSubmit.textContent = authMode === 'login' ? 'Вход...' : 'Регистрация...';
+    authSubmit.style.opacity = '0.6';
+    authError.style.display = 'none';
     try {
         const resp = await fetch(url, {
             method: 'POST',
@@ -388,7 +413,6 @@ authSubmit.addEventListener('click', async () => {
             currentUser = data.user;
             updateAuthUI();
             hideAuthModal();
-            // Перезагружаем новости с учётом авторизации
             viewMode === 'favorites' ? fetchFavorites() : fetchNews();
         } else {
             authError.textContent = data.error || 'Ошибка';
@@ -397,6 +421,10 @@ authSubmit.addEventListener('click', async () => {
     } catch (e) {
         authError.textContent = 'Нет соединения с сервером';
         authError.style.display = 'block';
+    } finally {
+        authSubmit.disabled = false;
+        authSubmit.textContent = origText;
+        authSubmit.style.opacity = '';
     }
 });
 

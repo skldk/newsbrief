@@ -14,7 +14,7 @@ import http.server
 import urllib.request, urllib.error
 import json, xml.etree.ElementTree as ET, os, sys, re, time, hashlib, hmac, base64, secrets
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple
 from urllib.parse import urlparse, parse_qs
 
 # ── Конфигурация ──────────────────────────────────────────────
@@ -33,6 +33,35 @@ YANDEX_CLIENT_SECRET = os.environ.get("YANDEX_CLIENT_SECRET", "")
 YANDEX_REDIRECT_URI = os.environ.get("YANDEX_REDIRECT_URI", f"http://localhost:{PORT}/api/auth/yandex/callback")
 
 CACHED_RESULT, CACHE_TIME, CACHE_TTL = None, 0, 300
+
+# ── Rate limiting (in-memory) ────────────────────────────────────
+MAX_LOGIN_ATTEMPTS = 5
+BLOCK_DURATION = 15 * 60  # 15 минут
+_login_attempts = {}  # {ip: (count, first_attempt_time)}
+
+def check_rate_limit(ip: str) -> Tuple[bool, str]:
+    """Возвращает (разрешено, сообщение_об_ошибке)."""
+    now = time.time()
+    entry = _login_attempts.get(ip)
+    if entry:
+        count, first = entry
+        if count >= MAX_LOGIN_ATTEMPTS and (now - first) < BLOCK_DURATION:
+            remaining = int(BLOCK_DURATION - (now - first))
+            return False, f"Слишком много попыток. Попробуйте через {remaining // 60} мин {remaining % 60} сек"
+        if (now - first) >= BLOCK_DURATION:
+            del _login_attempts[ip]
+    return True, ""
+
+def record_failed_attempt(ip: str):
+    now = time.time()
+    entry = _login_attempts.get(ip)
+    if entry and (now - entry[1]) < BLOCK_DURATION:
+        _login_attempts[ip] = (entry[0] + 1, entry[1])
+    else:
+        _login_attempts[ip] = (1, now)
+
+def clear_rate_limit(ip: str):
+    _login_attempts.pop(ip, None)
 
 # ── База данных (SQLite) ──────────────────────────────────────
 import sqlite3, threading
@@ -486,10 +515,19 @@ class AppHandler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/auth/login":
             email = data.get("email", "")
             password = data.get("password", "")
+            ip = self.client_address[0]
+
             user = authenticate_user(email, password)
             if user is None:
+                # Rate limit: проверяем ДО записи попытки
+                allowed, msg = check_rate_limit(ip)
+                if not allowed:
+                    self._json({"error": msg}, 429)
+                    return
+                record_failed_attempt(ip)
                 self._json({"error": "Неверный email или пароль"}, 401)
                 return
+            clear_rate_limit(ip)
             access, refresh = create_tokens(user["id"])
             self._cors(200)
             set_auth_cookies(self, access, refresh)
